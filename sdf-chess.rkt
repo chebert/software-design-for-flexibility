@@ -131,7 +131,7 @@
                    (make-non-capturing-directional-move pmove (pawn-direction piece)))))
     (and move (update-piece (λ (x) (piece-new-type x 'en-passant-pawn)) move))))
 
-(define (get-pawn-simple-moves pmove piece)
+(define (get-pawn-non-capture-moves pmove piece)
   (let ((single-move (make-non-capturing-directional-move pmove (pawn-direction piece))))
     (if single-move
         (map finish-move
@@ -168,12 +168,29 @@
                         (and en-passant-move (finish-move en-passant-move)))))
                 directions)))
 
+(define (pawn-reached-opposite-side? pmove)
+  (let* ((piece (current-piece pmove))
+         (y (coords-y (piece-coords piece))))
+    (if (black? piece)
+        (= y 7)
+        (= y 0))))
+
+(define (promotion-moves pmove)
+  (map (λ (type)
+         (finish-move
+          (update-piece (λ (x) (piece-new-type x type)) pmove)))
+       '(queen bishop rook knight)))
+
 (define-evolution-rule 'pawn-move chess
   (λ (pmove)
     (let ((piece (current-piece pmove)))
       (if (pawn? piece)
-          (append (get-pawn-simple-moves pmove piece)
-                  (get-pawn-capture-moves pmove piece))
+          (append-map (λ (pmove)
+                        (if (pawn-reached-opposite-side? pmove)
+                            (promotion-moves pmove)
+                            (list (finish-move pmove))))
+                      (append (get-pawn-non-capture-moves pmove piece)
+                              (get-pawn-capture-moves pmove piece)))
           '()))))
 
 (define knight-offsets
@@ -334,9 +351,10 @@
          (piece 'white (coords 3 4) 'knight)
 
          
-         (piece 'black (coords 4 1) 'bishop)
+         ;(piece 'black (coords 4 1) 'bishop)
          (piece 'black (coords 7 3) 'en-passant-pawn)
-         (piece 'white (coords 6 3) 'pawn))
+         (piece 'white (coords 6 3) 'pawn)
+         (piece 'white (coords 1 1) 'pawn))
    'white))
 
 (define (initial-pmoves board)

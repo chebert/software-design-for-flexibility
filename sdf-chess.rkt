@@ -8,9 +8,9 @@
 (define chess (make-game 'chess))
 
 (define (queen? piece) (eq? (piece-type piece) 'queen))
-(define (king? piece) (eq? (piece-type piece) 'king))
+(define (king? piece) (memv (piece-type piece) '(king initial-king)))
 (define (bishop? piece) (eq? (piece-type piece) 'bishop))
-(define (rook? piece) (eq? (piece-type piece) 'rook))
+(define (rook? piece) (memv (piece-type piece) '(rook initial-rook)))
 
 (define (en-passant-pawn? piece) (eq? (piece-type piece) 'en-passant-pawn))
 (define (pawn? piece) (memv (piece-type piece) '(pawn en-passant-pawn)))
@@ -198,6 +198,29 @@
            knight-offsets)
           '()))))
 
+(define (other-color color)
+  (if (eq? color 'black)
+      'white
+      'black))
+(define (board-swap-color b)
+  (board (board-pieces b) (other-color (board-current-color b))))
+(define (other-pieces board)
+  (filter (λ (piece) (eq? (piece-color piece) (other-color (board-current-color board))))
+          (board-pieces board)))
+
+(define (captures-king? pmove)
+  (and (captures-pieces? pmove)
+       (not (findf king? (other-pieces (current-board pmove))))))
+
+(define (in-check? board)
+  (findf captures-king? (execute-rules (initial-pmoves (board-swap-color board)) (get-evolution-rules chess) '())))
+
+(define (results-in-check? pmove) (in-check? (current-board pmove)))
+(define-aggregate-rule 'remove-check-moves chess
+  (λ (pmoves)
+    (filter (λ (pmove) (not (results-in-check? pmove)))
+            pmoves)))
+
 ;; Draw the board.
 (define (stringify datum)
   (let ((o (open-output-string)))
@@ -309,7 +332,9 @@
          (piece 'white (coords 5 6) 'pawn)
          (piece 'black (coords 4 5) 'pawn)
          (piece 'white (coords 3 4) 'knight)
+
          
+         (piece 'black (coords 4 1) 'bishop)
          (piece 'black (coords 7 3) 'en-passant-pawn)
          (piece 'white (coords 6 3) 'pawn))
    'white))

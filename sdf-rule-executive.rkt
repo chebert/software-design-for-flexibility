@@ -17,9 +17,9 @@
 ;; Pieces
 (struct piece (color coords type) #:transparent)
 
-(define (piece-new-type piece type)
-  (piece (piece-color piece)
-         (piece-coords piece)
+(define (piece-new-type p type)
+  (piece (piece-color p)
+         (piece-coords p)
          type))
 
 (define (piece-new-coords p coords)
@@ -77,8 +77,17 @@
   (get-board (first pmove)))
 (define (current-piece pmove)
   (get-piece (first pmove)))
+(define (current-flags pmove)
+  (get-flags (first pmove)))
 
 (define (combine-flags flags old-flags) (set-union flags old-flags))
+
+(define (append-flags pmove flags)
+  (cons (change
+         (current-board pmove)
+         (current-piece pmove)
+         (combine-flags flags (current-flags pmove)))
+        pmove))
 
 (define (update-piece-and-append-flags procedure pmove flags)
   (let* ((old-piece (current-piece pmove))
@@ -180,7 +189,8 @@
          is-pmove-finished?
          current-board
          current-piece
-         combine-flags
+         current-flags
+         append-flags
          update-piece-and-append-flags
          update-piece
          new-piece-position

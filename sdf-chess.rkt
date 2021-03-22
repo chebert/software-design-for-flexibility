@@ -11,7 +11,10 @@
 (define (king? piece) (eq? (piece-type piece) 'king))
 (define (bishop? piece) (eq? (piece-type piece) 'bishop))
 (define (rook? piece) (eq? (piece-type piece) 'rook))
-(define (pawn? piece) (eq? (piece-type piece) 'pawn))
+
+(define (en-passant-pawn? piece) (eq? (piece-type piece) 'en-passant-pawn))
+(define (pawn? piece) (memv (piece-type piece) '(pawn en-passant-pawn)))
+(define (knight? piece) (eq? (piece-type piece) 'knight))
 
 (define west (coords -1 0))
 (define east (coords 1 0))
@@ -44,16 +47,27 @@
 (define (slide-direction-flag? flag) (and (pair? flag) (eq? (first flag) 'slide-direction)))
 (define (slide-direction-from-flag slide-direction-flag) (second slide-direction-flag))
 
-(define (sliding-move? pmove) (findf slide-direction-flag? (get-flags (first pmove))))
+(define (sliding-move? pmove) (findf slide-direction-flag? (current-flags pmove)))
 (define (slide-direction pmove)
-  (let* ((flags  (get-flags (first pmove)))
+  (let* ((flags  (current-flags pmove))
          (flag (findf slide-direction-flag? flags)))
     (if (not flag)
         (error "Could not find slide-direction flag in " flags)
         (slide-direction-from-flag flag))))
 
-(define (finish-capture-move new-coords pmove)
-  (finish-move (new-piece-position new-coords (capture-piece-at new-coords pmove))))
+(define (make-finished-capture-move new-coords pmove)
+  (let ((board (current-board pmove)))
+    (and
+     (is-position-on-board? new-coords board)
+     (is-position-occupied-by-opponent? new-coords board)
+     (finish-move (new-piece-position new-coords (capture-piece-at new-coords pmove))))))
+
+(define (make-non-capture-move new-coords pmove)
+  (let ((board (current-board pmove)))
+    (and 
+     (is-position-on-board? new-coords board)
+     (is-position-unoccupied? new-coords board)
+     (new-piece-position new-coords pmove))))
 
 ;; Slide piece in direction by 1 square.
 ;; Capture an opposing piece, or moves piece to the unoccupied square.
@@ -62,28 +76,19 @@
   (let* ((piece (current-piece pmove))
          (board (current-board pmove))
          (new-position (coords+ (piece-coords piece) direction)))
-    (and
-     (is-position-on-board? new-position board)
-     (cond
-       ((is-position-occupied-by-opponent? new-position board)
-        (finish-capture-move new-position pmove))
-       ((is-position-unoccupied? new-position board)
-        (new-piece-position new-position pmove))
-       (else #f)))))
+    (or
+     (make-finished-capture-move new-position pmove)
+     (make-non-capture-move new-position pmove))))
 
 (define (make-non-capturing-directional-move pmove direction)
   (let* ((piece (current-piece pmove))
          (board (current-board pmove))
          (new-position (coords+ (piece-coords piece) direction)))
-    (and
-     (is-position-on-board? new-position board)
-     (is-position-unoccupied? new-position board)
-     (new-piece-position new-position pmove))))
-
+    (make-non-capture-move new-position pmove)))
 
 (define (start-sliding-move pmove direction)
   (make-capturing-directional-move
-   (update-piece-and-append-flags (λ (x) x) pmove (list (make-slide-direction-flag direction)))
+   (append-flags pmove (list (make-slide-direction-flag direction)))
    direction))
 
 (define (continue-sliding-move pmove)
@@ -122,8 +127,9 @@
       (= (coords-y (piece-coords piece)) 6)))
 
 (define (get-pawn-extended-move pmove piece)
-  (and (pawn-in-initial-position? piece)
-       (make-non-capturing-directional-move pmove (pawn-direction piece))))
+  (let ((move (and (pawn-in-initial-position? piece)
+                   (make-non-capturing-directional-move pmove (pawn-direction piece)))))
+    (and move (update-piece (λ (x) (piece-new-type x 'en-passant-pawn)) move))))
 
 (define (get-pawn-simple-moves pmove piece)
   (let ((single-move (make-non-capturing-directional-move pmove (pawn-direction piece))))
@@ -136,25 +142,60 @@
   (if (black? piece)
       (list southeast southwest)
       (list northeast northwest)))
-      
+
+(define (make-finished-non-capture-move new-coords pmove)
+  (let ((move (make-non-capture-move new-coords pmove)))
+    (and move (finish-move move))))
+
+(define (make-en-passant-capture-move new-coords pmove)
+  (let* ((board (current-board pmove))
+         (piece (current-piece pmove))
+         (old-coords (piece-coords piece))
+         (offset (coords (- (coords-x new-coords) (coords-x old-coords)) 0))
+         (capture-coords (coords+ old-coords offset)))
+    (and (is-position-on-board? new-coords board)
+         (is-position-on-board? capture-coords board)
+         (is-position-occupied-by-opponent? capture-coords board)
+         (en-passant-pawn? (board-get capture-coords board))
+         (capture-piece-at capture-coords (make-non-capture-move new-coords pmove)))))
 
 (define (get-pawn-capture-moves pmove piece)
   (let ((directions (get-pawn-capture-directions piece)))
     (filter-map (λ (direction)
-                  (let ((new-coords (coords+ (piece-coords piece) direction))
-                        (board (current-board pmove)))
-                    (and
-                     (is-position-on-board? new-coords board)
-                     (is-position-occupied-by-opponent? new-coords board)
-                     (finish-capture-move new-coords pmove))))
+                  (let* ((new-coords (coords+ (piece-coords piece) direction))
+                         (en-passant-move (make-en-passant-capture-move new-coords pmove)))
+                    (or (make-finished-capture-move new-coords pmove)
+                        (and en-passant-move (finish-move en-passant-move)))))
                 directions)))
 
-(define-evolution-rule 'pawn-simple-move chess
+(define-evolution-rule 'pawn-move chess
   (λ (pmove)
     (let ((piece (current-piece pmove)))
       (if (pawn? piece)
           (append (get-pawn-simple-moves pmove piece)
                   (get-pawn-capture-moves pmove piece))
+          '()))))
+
+(define knight-offsets
+  (list (coords 1 2)
+        (coords 2 1)
+        (coords -1 2)
+        (coords 2 -1)
+        (coords 1 -2)
+        (coords -2 1)
+        (coords -1 -2)
+        (coords -2 -1)))
+
+(define-evolution-rule 'knight-move chess
+  (λ (pmove)
+    (let ((piece (current-piece pmove)))
+      (if (knight? piece)
+          (filter-map 
+           (λ (offset)
+             (let ((new-coords (coords+ (piece-coords piece) offset)))
+               (or (make-finished-capture-move new-coords pmove)
+                   (make-finished-non-capture-move new-coords pmove))))
+           knight-offsets)
           '()))))
 
 ;; Draw the board.
@@ -171,7 +212,7 @@
 
 (define (piece->board-string piece)
   (string-append
-   (if (eq? 'black (piece-color piece))
+   (if (black? piece)
        "b"
        "w")
    (cond
@@ -179,7 +220,8 @@
      ((bishop? piece) "B")
      ((rook? piece) "R")
      ((king? piece) "K")
-     ((pawn? piece) "P"))))
+     ((pawn? piece) "P")
+     ((knight? piece) "N"))))
 
 (define (board-coords->string board old-board coords current-piece)
   (let ((piece (board-get coords board))
@@ -231,6 +273,11 @@
     ((equal? direction southeast) "southeast")
     ((equal? direction southwest) "southwest")))
 
+(define (captured-piece old-board current-board old-piece current-piece)
+  (let ((diff (set-subtract (remove old-piece (board-pieces old-board))
+                            (remove current-piece (board-pieces current-board)))))
+    (if (null? diff) #f (first diff))))
+
 (define (move->string pmove)
   (let* ((initial-pmove (last pmove))
          (initial-board (get-board initial-pmove))
@@ -238,14 +285,14 @@
          (board (current-board pmove))
          (piece (current-piece pmove))
          (current-coords (piece-coords piece))
-         (flags (get-flags (first pmove))))
+         (flags (current-flags pmove)))
     (string-append
      (piece->string initial-piece) " moves to " (coords->string current-coords) "\n"
      (if (piece-changed-type? initial-piece piece)
          (string-append " and changes into a " (stringify (piece-type piece)) "\n")
          "")   
      (if (captures-pieces? pmove)
-         (string-append "  capturing " (piece->string (board-get current-coords initial-board)) "\n")
+         (string-append "  capturing " (piece->string (captured-piece initial-board board initial-piece piece)) "\n")
          "")
      (if (sliding-move? pmove)
          (string-append "  by sliding " (direction->string (slide-direction pmove)) "\n")
@@ -260,7 +307,11 @@
          (piece 'white (coords 2 6) 'rook)
          (piece 'white (coords 5 2) 'king)
          (piece 'white (coords 5 6) 'pawn)
-         (piece 'black (coords 4 5) 'pawn))
+         (piece 'black (coords 4 5) 'pawn)
+         (piece 'white (coords 3 4) 'knight)
+         
+         (piece 'black (coords 7 3) 'en-passant-pawn)
+         (piece 'white (coords 6 3) 'pawn))
    'white))
 
 (define (initial-pmoves board)

@@ -96,8 +96,12 @@
 
 (define (get-sliding-moves pmove)
   (if (is-pmove-empty? pmove)
-      (filter-map (λ (direction) (start-sliding-move pmove direction))
-                  (sliding-piece-directions (current-piece pmove)))
+      (let* ((piece (current-piece pmove))
+             ;; Remove initial status of piece since we are moving it.
+             (updated-pmove (remove-piece-initial-status pmove)))
+        (filter-map (λ (direction)
+                      (start-sliding-move updated-pmove direction))
+                    (sliding-piece-directions piece)))
       (let ((move (continue-sliding-move pmove)))
         (if move
             (list (finish-move pmove) move)
@@ -112,11 +116,16 @@
 
 (define-evolution-rule 'king-move chess
   (λ (pmove)
-    (let ((piece (current-piece pmove)))
-      (if (king? piece)
+    (let ((king (current-piece pmove)))
+      (if (king? king)
           (map finish-move
-               (filter-map (λ (direction) (make-capturing-directional-move pmove direction))
-                           all-directions))
+               (filter-map
+                (λ (direction)
+                  (make-capturing-directional-move
+                   ;; king is no longer in the initial position
+                   (remove-piece-initial-status pmove)
+                   direction))
+                all-directions))
           '()))))
 
 (define (black? piece) (eq? (piece-color piece) 'black))
@@ -129,7 +138,7 @@
 (define (get-pawn-extended-move pmove piece)
   (let ((move (and (pawn-in-initial-position? piece)
                    (make-non-capturing-directional-move pmove (pawn-direction piece)))))
-    (and move (update-piece (λ (x) (piece-new-type x 'en-passant-pawn)) move))))
+    (and move (set-pawn-en-passant-status move))))
 
 (define (get-pawn-non-capture-moves pmove piece)
   (let ((single-move (make-non-capturing-directional-move pmove (pawn-direction piece))))
@@ -163,17 +172,19 @@
   (let ((directions (get-pawn-capture-directions piece)))
     (filter-map (λ (direction)
                   (let* ((new-coords (coords+ (piece-coords piece) direction))
-                         (en-passant-move (make-en-passant-capture-move new-coords pmove)))
-                    (or (make-finished-capture-move new-coords pmove)
-                        (and en-passant-move (finish-move en-passant-move)))))
+                         (en-passant-move (make-en-passant-capture-move new-coords pmove))
+                         (capture-move (or (make-finished-capture-move new-coords pmove)
+                                           (and en-passant-move (finish-move en-passant-move)))))
+                    capture-move))
                 directions)))
 
 (define (pawn-reached-opposite-side? pmove)
   (let* ((piece (current-piece pmove))
          (y (coords-y (piece-coords piece))))
-    (if (black? piece)
-        (= y 7)
-        (= y 0))))
+    (and (pawn? piece)
+         (if (black? piece)
+             (= y 7)
+             (= y 0)))))
 
 (define (promotion-moves pmove)
   (map (λ (type)
@@ -181,17 +192,122 @@
           (update-piece (λ (x) (piece-new-type x type)) pmove)))
        '(queen bishop rook knight)))
 
-(define-evolution-rule 'pawn-move chess
+(define-aggregate-rule 'promote-pawns chess
+  (λ (pmoves)
+    (append-map
+     (λ (pmove)
+       (if (pawn-reached-opposite-side? pmove)
+           (promotion-moves pmove)
+           (list pmove)))
+     pmoves)))
+
+(define (remove-piece-initial-status pmove)
+  (let ((piece (current-piece pmove)))
+    (cond ((initial-king? piece) (update-piece (λ (p) (piece-new-type p 'king)) pmove))
+          ((initial-rook? piece) (update-piece (λ (p) (piece-new-type p 'rook)) pmove))
+          (else pmove))))
+(define (remove-pawn-en-passant-status pmove)
+  (let ((pawn (current-piece pmove)))
+    (cond ((en-passant-pawn? pawn) (update-piece (λ (p) (piece-new-type p 'pawn)) pmove))
+          (else pmove))))
+(define (set-pawn-en-passant-status pmove)
+  (let ((pawn (current-piece pmove)))
+    (cond ((pawn? pawn) (update-piece (λ (p) (piece-new-type p 'en-passant-pawn)) pmove))
+          (else pmove))))
+
+(define-evolution-rule 'pawn-non-capture-move chess
   (λ (pmove)
-    (let ((piece (current-piece pmove)))
-      (if (pawn? piece)
-          (append-map (λ (pmove)
-                        (if (pawn-reached-opposite-side? pmove)
-                            (promotion-moves pmove)
-                            (list (finish-move pmove))))
-                      (append (get-pawn-non-capture-moves pmove piece)
-                              (get-pawn-capture-moves pmove piece)))
+    (let ((pawn (current-piece pmove)))
+      (if (and (is-pmove-empty? pmove) (pawn? pawn))
+          (get-pawn-non-capture-moves pmove pawn)
           '()))))
+(define-evolution-rule 'pawn-capture-move chess
+  (λ (pmove)
+    (let ((pawn (current-piece pmove)))
+      (if (and (is-pmove-empty? pmove) (pawn? pawn))
+          (get-pawn-capture-moves pmove pawn)
+          '()))))
+
+(define (initial-rook? piece) (eq? (piece-type piece) 'initial-rook))
+(define (initial-king? piece) (eq? (piece-type piece) 'initial-king))
+(define (every? bools) (foldl (λ (x y) (and x y)) #t bools))
+(define (none? bools) (not (every? bools)))
+(define (some? bools) (foldl (λ (x y) (or x y)) #f bools))
+
+(define (all-coords-between-x c1 c2)
+  (let ((c1x (coords-x c1)) (c2x (coords-x c2)))
+    (map (λ (x) (coords x (coords-y c1)))
+         (if (< c1x c2x)
+             (range (+ 1 c1x) c2x)
+             (range (+ 1 c2x) c1x)))))
+(define (all-coords-between-x-inclusive c1 c2)
+  (let ((c1x (coords-x c1)) (c2x (coords-x c2)))
+    (map (λ (x) (coords x (coords-y c1)))
+         (if (< c1x c2x)
+             (range c1x (+ 1 c2x))
+             (range c2x (+ 1 c1x))))))
+
+(define (positions-between-coords-are-unoccupied? board c1 c2)
+  (every? (map (λ (c) (is-position-unoccupied? c board))
+               (all-coords-between-x c1 c2))))
+
+(define (would-be-in-check? board piece new-coords)
+  (in-check? (board-replace piece (piece-new-coords piece new-coords) board)))
+
+(define south-end 7)
+(define north-end 0)
+(define west-end 0)
+(define east-end 7)
+
+(define (west-rook? initial-rook)
+  (= west-end (coords-x (piece-coords initial-rook))))
+
+(define (king-castle-offset rook)
+  (offset*
+   (if (west-rook? rook) west east)
+   2))
+
+(define (king-intermediate-castle-positions rook king)
+  (all-coords-between-x (coords+ (piece-coords king) (king-castle-offset rook))
+                        (piece-coords king)))
+
+(define (does-castling-apply? pmove)
+  (let* ((rook (current-piece pmove))
+         (board (current-board pmove))
+         (king (findf initial-king? (current-pieces board))))
+    (and (is-pmove-empty? pmove)
+         ;; King and rook are in their initial positions and have not moved.
+         (initial-rook? rook)
+         king
+         ;; all of the spaces the king and rook pass through are unoccupied
+         (positions-between-coords-are-unoccupied? board (piece-coords rook) (piece-coords king))
+         ;; the king is not currently in check
+         (not (in-check? board))
+         ;; None of the positions the king passes through would be in check
+         (none? (map (λ (coords) (would-be-in-check? board king coords))
+                     (king-intermediate-castle-positions rook king))))))
+
+(define (rook-castle-position castled-king rook)
+  (if (west-rook? rook)
+      (coords+ east (piece-coords castled-king))
+      (coords+ west (piece-coords castled-king))))
+
+(define-evolution-rule 'castling chess
+  (λ (pmove)
+    (if (does-castling-apply? pmove)
+        (let* ((board (current-board pmove))
+               (king (findf king? (current-pieces board)))
+               (rook (current-piece pmove))
+               (new-king (piece-new-coords king (coords+ (piece-coords king) (king-castle-offset rook))))
+               (new-rook-pos (rook-castle-position new-king rook))
+               (pmove2 (new-piece-position new-rook-pos pmove)))
+          (list (finish-move
+                 (cons (change
+                        (board-replace king new-king (current-board pmove2))
+                        (current-piece pmove2)
+                        (combine-flags '(castle) (current-flags pmove2)))
+                       pmove2))))
+        '())))
 
 (define knight-offsets
   (list (coords 1 2)
@@ -238,6 +354,28 @@
     (filter (λ (pmove) (not (results-in-check? pmove)))
             pmoves)))
 
+(define (board-replace-en-passant-pawns b)
+  (let ((current-color (board-current-color b)))
+    (board
+     (map (λ (piece)
+            (if (and (not (eq? (piece-color piece) current-color))
+                     (en-passant-pawn? piece))
+                (piece-new-type piece 'pawn)
+                piece))
+          (board-pieces b))
+     current-color)))
+
+;; at the end of the turn, remove the en-passant status from all pawns for the next color.
+(define-aggregate-rule 'remove-en-passant-status chess
+  (λ (pmoves)
+    (map (λ (pmove)
+           (cons (change
+                  (board-replace-en-passant-pawns (current-board pmove))
+                  (current-piece pmove)
+                  (current-flags pmove))
+                 pmove))
+         pmoves)))
+
 ;; Draw the board.
 (define (stringify datum)
   (let ((o (open-output-string)))
@@ -258,8 +396,11 @@
    (cond
      ((queen? piece) "Q")
      ((bishop? piece) "B")
+     ((initial-rook? piece) "r")
      ((rook? piece) "R")
+     ((initial-king? piece) "k")
      ((king? piece) "K")
+     ((en-passant-pawn? piece) "p")
      ((pawn? piece) "P")
      ((knight? piece) "N"))))
 
@@ -318,6 +459,8 @@
                             (remove current-piece (board-pieces current-board)))))
     (if (null? diff) #f (first diff))))
 
+(define (castling-move? pmove) (memv 'castle (current-flags pmove)))
+
 (define (move->string pmove)
   (let* ((initial-pmove (last pmove))
          (initial-board (get-board initial-pmove))
@@ -337,24 +480,29 @@
      (if (sliding-move? pmove)
          (string-append "  by sliding " (direction->string (slide-direction pmove)) "\n")
          "")
+     (if (castling-move? pmove)
+         "  by castling\n"
+         "")
      (board->string board initial-board piece))))
 
 (define test-board
   (board
    (list (piece 'white (coords 4 4) 'queen)
-         (piece 'black (coords 4 7) 'queen)
+         ;(piece 'black (coords 4 6) 'queen)
          (piece 'white (coords 2 2) 'bishop)
-         (piece 'white (coords 2 6) 'rook)
-         (piece 'white (coords 5 2) 'king)
+         ;(piece 'white (coords 2 6) 'rook)
          (piece 'white (coords 5 6) 'pawn)
          (piece 'black (coords 4 5) 'pawn)
          (piece 'white (coords 3 4) 'knight)
-
          
          ;(piece 'black (coords 4 1) 'bishop)
          (piece 'black (coords 7 3) 'en-passant-pawn)
          (piece 'white (coords 6 3) 'pawn)
-         (piece 'white (coords 1 1) 'pawn))
+         (piece 'white (coords 1 1) 'pawn)
+
+         (piece 'white (coords 4 7) 'initial-king)
+         (piece 'white (coords 0 7) 'initial-rook)
+         (piece 'white (coords 7 7) 'initial-rook))
    'white))
 
 (define (initial-pmoves board)
@@ -365,3 +513,28 @@
   (execute-rules
    (initial-pmoves board)
    (get-evolution-rules game) (get-aggregate-rules game)))
+
+(define start-board
+  (board
+   (append
+    (list
+     (piece 'black (coords 0 0) 'initial-rook)
+     (piece 'black (coords 1 0) 'knight)
+     (piece 'black (coords 2 0) 'bishop)
+     (piece 'black (coords 3 0) 'queen)
+     (piece 'black (coords 4 0) 'king)
+     (piece 'black (coords 5 0) 'bishop)
+     (piece 'black (coords 6 0) 'knight)
+     (piece 'black (coords 7 0) 'initial-rook))
+    (map (λ (x) (piece 'black (coords x 1) 'pawn)) (range 8))
+    (list
+     (piece 'white (coords 0 7) 'initial-rook)
+     (piece 'white (coords 1 7) 'knight)
+     (piece 'white (coords 2 7) 'bishop)
+     (piece 'white (coords 3 7) 'queen)
+     (piece 'white (coords 4 7) 'king)
+     (piece 'white (coords 5 7) 'bishop)
+     (piece 'white (coords 6 7) 'knight)
+     (piece 'white (coords 7 7) 'initial-rook))
+    (map (λ (x) (piece 'white (coords x 6) 'pawn)) (range 8)))
+   'white))

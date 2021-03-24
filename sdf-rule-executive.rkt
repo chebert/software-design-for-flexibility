@@ -184,6 +184,7 @@
          get-board
          get-piece
          get-flags
+         combine-flags
          initial-pmove
          is-pmove-empty?
          is-pmove-finished?

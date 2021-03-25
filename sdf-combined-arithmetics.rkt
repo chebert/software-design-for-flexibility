@@ -5,24 +5,46 @@
 (require (only-in racket/pretty
                   (pretty-print pp)))
 
+(define-for-syntax arithmetic-operators
+  '(- + * / = > < >= <= expt sin cos))
+
+(define-for-syntax binding-operator-name car)
+(define-for-syntax binding-procedure-name cadr)
+
+(define-for-syntax implementation-prefix 'n:)
+(define-for-syntax (implementation-operator-name operator)
+  (string->symbol (string-append (symbol->string implementation-prefix) (symbol->string operator))))
+(define-for-syntax (arithmetic-operator-binding operator)
+  `(,operator ,(implementation-operator-name operator)))
 (define-for-syntax arithmetic-operator-bindings
-  '((- n:-)
-    (+ n:+)
-    (* n:*)
-    (/ n:/)
-    (= n:=)
-    (> n:>)
-    (< n:<)
-    (>= n:>=)
-    (<= n:<=)
-    (expt n:expt)
-    (sin n:sin)
-    (cos n:cos)))
+  (map arithmetic-operator-binding arithmetic-operators))
+(define-for-syntax (arithmetic-operator-definition binding)
+  `(define ,(binding-operator-name binding) ,(binding-procedure-name binding)))
+(define-for-syntax arithmetic-operator-definitions
+  (map arithmetic-operator-definition arithmetic-operator-bindings))
 
-(define-syntax (require-arithmetic stx)
-  (datum->syntax stx `(require (only-in racket ,@arithmetic-operator-bindings))))
+(define-for-syntax get-implementation-value-cases
+  (map (λ (binding) `((,(binding-operator-name binding)) ,(binding-procedure-name binding))) arithmetic-operator-bindings))
+(define-for-syntax get-implementation-value-definition
+  `(define (get-implementation-value procedure-name)
+     (case procedure-name ,@get-implementation-value-cases)))
 
-(require-arithmetic)
+(define-for-syntax (arithmetic-operator-installations package)
+  (map (λ (operator)
+         `(set! ,operator (package-operator ,package ',operator)))
+       arithmetic-operators))
+(define-for-syntax install-arithmetic-definition
+  `(define (install-arithmetic! package)
+     ,@(arithmetic-operator-installations 'package)))
+
+(define-syntax (define-arithmetic stx)
+  (datum->syntax stx `(begin (define arithmetic-operators ',arithmetic-operators)
+                             ,@arithmetic-operator-definitions
+                             (require (only-in racket ,@arithmetic-operator-bindings))
+                             ,get-implementation-value-definition
+                             ,install-arithmetic-definition)))
+
+(define-arithmetic)
 
 (define (operator->procedure-name operator) operator)
 
@@ -30,41 +52,7 @@
   (procedure-arity
    (get-implementation-value (operator->procedure-name operator))))
 
-(define-syntax (%get-implementation-value stx)
-  (syntax-case stx ()
-    [(_ procedure-name)
-     (datum->syntax
-      stx
-      `(case procedure-name
-         ,@(map (λ (binding) `((,(car binding)) ,(cadr binding))) arithmetic-operator-bindings)))]))
-
-(define (get-implementation-value procedure-name)
-  (%get-implementation-value procedure-name))
-
-(define-for-syntax arithmetic-operators (map car arithmetic-operator-bindings))
-(define-syntax (arithmetic-operators stx)
-  (datum->syntax stx `',arithmetic-operators))
-
-(define-syntax (define-arithmetic-operators stx)
-  (datum->syntax stx
-                 `(begin
-                    ,@(map (λ (binding) `(define ,(car binding) ,(cadr binding))) arithmetic-operator-bindings))))
-(define-arithmetic-operators)
-
-(define-syntax (install-arithmetic-operators! stx)
-  (syntax-case stx ()
-    [(_ package)
-     (datum->syntax
-      stx
-      `(begin
-         ,@(map (λ (binding)
-                  (let ((operator (car binding)))
-                    `(set! ,operator (cdr (assq ',operator package)))))
-                arithmetic-operator-bindings)))]))
-
-(define (install-arithmetic! package)
-  (install-arithmetic-operators! package))
-
+(define (package-operator package operator) (cdr (assq operator package)))
 
 ;; Simple ODE
 
@@ -130,7 +118,7 @@
 
 (define (make-arithmetic-1 name operator-modifier)
   (map (λ (operator) (cons operator (operator-modifier operator)))
-       (arithmetic-operators)))
+       arithmetic-operators))
 
 (define symbolic-arithmetic-1
   (make-arithmetic-1 'symbolic

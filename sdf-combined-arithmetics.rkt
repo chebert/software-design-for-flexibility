@@ -19,32 +19,10 @@
     (sin n:sin)
     (cos n:cos)))
 
-
-(define-for-syntax (p datum) (print datum) datum)
-
 (define-syntax (require-arithmetic stx)
-  (p #`(require (only-in racket #,@arithmetic-operator-bindings))))
+  (datum->syntax stx `(require (only-in racket ,@arithmetic-operator-bindings))))
 
 (require-arithmetic)
-(require (only-in racket
-                  (- n:-)
-                  (+ n:+)
-                  (* n:*)
-                  (/ n:/)
-                  (= n:=)
-                  (> n:>)
-                  (< n:<)
-                  (>= n:>=)
-                  (<= n:<=)
-                  (expt n:expt)
-                  (sin n:sin)
-                  (cos n:cos)))
-
-(define-syntax-rule (define-operators operator ...)
-  (begin
-    (define operator #f)
-    ...))
-
 
 (define (operator->procedure-name operator) operator)
 
@@ -55,29 +33,34 @@
 (define-syntax (%get-implementation-value stx)
   (syntax-case stx ()
     [(_ procedure-name)
-     #`(case procedure-name
-         #,@(map (λ (binding) #`((#,(car binding)) #,(cadr binding))) arithmetic-operator-bindings))]))
+     (datum->syntax
+      stx
+      `(case procedure-name
+         ,@(map (λ (binding) `((,(car binding)) ,(cadr binding))) arithmetic-operator-bindings)))]))
+
 (define (get-implementation-value procedure-name)
   (%get-implementation-value procedure-name))
 
-(define arithmetic-operators '(+ - * / < > = >= <= expt sin cos))
 (define-for-syntax arithmetic-operators (map car arithmetic-operator-bindings))
-
+(define-syntax (arithmetic-operators stx)
+  (datum->syntax stx `',arithmetic-operators))
 
 (define-syntax (define-arithmetic-operators stx)
-  (p #`(begin
-         #,@(map (λ (binding) #`(define #,(car binding) #,(cadr binding))) arithmetic-operator-bindings))))
+  (datum->syntax stx
+                 `(begin
+                    ,@(map (λ (binding) `(define ,(car binding) ,(cadr binding))) arithmetic-operator-bindings))))
 (define-arithmetic-operators)
-(define-operators + - * / < > = >= <= expt sin cos)
 
 (define-syntax (install-arithmetic-operators! stx)
   (syntax-case stx ()
     [(_ package)
-     #`(begin
-         #,@(map (λ (binding)
-                   (let ((operator (car binding)))
-                     #`(set! #,operator (cdr (assq '#,operator package)))))
-                 arithmetic-operator-bindings))]))
+     (datum->syntax
+      stx
+      `(begin
+         ,@(map (λ (binding)
+                  (let ((operator (car binding)))
+                    `(set! ,operator (cdr (assq ',operator package)))))
+                arithmetic-operator-bindings)))]))
 
 (define (install-arithmetic! package)
   (install-arithmetic-operators! package))
@@ -147,7 +130,7 @@
 
 (define (make-arithmetic-1 name operator-modifier)
   (map (λ (operator) (cons operator (operator-modifier operator)))
-       arithmetic-operators))
+       (arithmetic-operators)))
 
 (define symbolic-arithmetic-1
   (make-arithmetic-1 'symbolic
@@ -197,4 +180,3 @@
                      (simple-operation operator number?
                                        (get-implementation-value
                                         (operator->procedure-name operator))))))
-

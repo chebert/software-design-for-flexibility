@@ -109,7 +109,7 @@
                         (sin 0) (sin -0.01) (sin -0.02)))
 
 (define (within? v expected tolerance)
-  (n:< (n:- expected tolerance) v (n:+ expected tolerance)))
+  (< (- expected tolerance) v (+ expected tolerance)))
 
 (define (test)
   (assert
@@ -138,7 +138,29 @@
 (define (operation-applicability operation)
   (third operation))
 
-(define (all-args arity predicate) 'applicability-specification)
+(define (all-args fixed-arity predicate)
+  (assert (exact-nonnegative-integer? fixed-arity))
+  (make-list fixed-arity predicate))
+
+(define (enumerate-combined-applicabilities xs ys)
+  (assert (= (length xs) (length ys)))
+  (let loop ((results '(()))
+             (xs xs)
+             (ys ys))
+    (if (null? xs)
+        (map reverse results)
+        (let ((x (first xs))
+              (y (first ys)))
+          (loop
+           (append-map (λ (result) (list (cons x result) (cons y result))) results)
+           (rest xs)
+           (rest ys))))))
+
+(define (any-arg fixed-arity predicate base-predicate)
+  (assert (exact-nonnegative-integer? fixed-arity))
+  (filter (λ (ps) (memq predicate ps))
+          (enumerate-combined-applicabilities (make-list fixed-arity predicate) (make-list fixed-arity base-predicate))))
+
 (define (simple-operation operator predicate procedure)
   (make-operation operator
                   (all-args (operator-arity operator)
@@ -150,7 +172,8 @@
    domain-predicate
    base-arithmetic-packages
    map-of-constant-name-to-constant
-   map-of-operator-name-to-operation))
+   map-of-operator-name-to-operation)
+  #:transparent)
 (define make-arithmetic arithmetic)
 
 (define default-object? (make-bundle-predicate 'default-object))
@@ -168,3 +191,20 @@
                      (simple-operation operator number?
                                        (get-implementation-value
                                         (operator->procedure-name operator))))))
+
+(define (symbolic? datum) (or (symbol? datum) (pair? datum)))
+
+(define (symbolic-extender base-arithmetic)
+  (make-arithmetic 'symbolic ;name
+                   symbolic? ;domain-predicate
+                   (list base-arithmetic) ;base-arithmetic-packages
+                   (λ (name base-constant) ;constant-generator
+                     base-constant)
+                   (let ((base-predicate
+                          (arithmetic-domain-predicate base-arithmetic)))
+                     (λ (operator base-operation) ;operator-generator
+                       (make-operation operator
+                                       (any-arg (operator-arity operator)
+                                                symbolic?
+                                                base-predicate)
+                                       (λ args cons operator args))))))

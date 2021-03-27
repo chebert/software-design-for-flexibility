@@ -250,10 +250,7 @@
     (λ (operator)
       (let ((operation (operation-map operator)))
         (fix-arithmetic-procedure-arity operator
-                                        (λ args
-                                          (if (is-operation-applicable? operation args)
-                                              (apply (operation-procedure operation) args)
-                                              (error "Inapplicable operation" operation args)))
+                                        (operation-procedure operation)
                                         constant-map)))))
 
 (define (is-operation-applicable? operation args)
@@ -302,13 +299,11 @@
                    (let ((base-predicate
                           (arithmetic-domain-predicate base-arithmetic)))
                      (λ (operator base-operation) ;operator-generator
-                       (operation-union operator
-                                        (make-operation operator
-                                                        (any-arg (operator-arity operator)
-                                                                 symbolic?
-                                                                 base-predicate)
-                                                        (λ args (cons operator args)))
-                                        base-operation)))))
+                       (make-operation operator
+                                       (any-arg (operator-arity operator)
+                                                symbolic?
+                                                base-predicate)
+                                       (λ args (cons operator args)))))))
 
 
 ;; Combinator for arithmetics
@@ -374,3 +369,8 @@
 
 (define (applicability-union* applicabilities)
   (apply append applicabilities))
+
+(define (extend-arithmetic extender base-arithmetic)
+  (add-arithmetics base-arithmetic (extender base-arithmetic)))
+
+(define combined-arithmetic (extend-arithmetic symbolic-extender numeric-arithmetic))

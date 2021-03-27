@@ -231,11 +231,26 @@
    map-of-operator-name-to-operation))
 
 
+(define (extended-constant-map arithmetic)
+  (λ (operator)
+    (apply (arithmetic-map-of-constant-name-to-constant arithmetic)
+           operator
+           (map (λ (base-arithmetic) ((extended-constant-map base-arithmetic) operator))
+                (arithmetic-base-arithmetic-packages arithmetic)))))
+
+(define (extended-operation-map arithmetic)
+  (λ (operator)
+    (apply (arithmetic-map-of-operator-name-to-operation arithmetic)
+           operator
+           (map (λ (base-arithmetic) ((extended-operation-map base-arithmetic) operator))
+                (arithmetic-base-arithmetic-packages arithmetic)))))
+
 (define (arithmetic-operator->installable-procedure-map arithmetic)
-  (let ((operation-map (arithmetic-map-of-operator-name-to-operation arithmetic))
-        (constant-map (arithmetic-map-of-constant-name-to-constant arithmetic)))
+  (let ((operation-map (extended-operation-map arithmetic))
+        (constant-map (extended-constant-map arithmetic)))
     (λ (operator)
       (let ((operation (operation-map operator)))
+        ;; TODO: check applicability
         (fix-arithmetic-procedure-arity operator (operation-procedure operation) constant-map)))))
 
 (define (install-arithmetic! arithmetic)
@@ -280,6 +295,6 @@
                                        (any-arg (operator-arity operator)
                                                 symbolic?
                                                 base-predicate)
-                                       (λ args cons operator args))))))
+                                       (λ args (cons operator args)))))))
 
-(install-arithmetic! numeric-arithmetic)
+(install-arithmetic! (symbolic-extender numeric-arithmetic))

@@ -53,21 +53,28 @@
   (define (me . args)
     (cond
       ((null? args) uid) ; (me) returns a uid
-      ;; expects the bundle to return the result of (me)
+      ;; expects the bundle to return the uid
       ((eq? uid ((first args) me)) #t)
       (else #f)))
   me)
+;; TODO: This always returns true for (λ (x) (x))
 
 (define-syntax-rule (bundle type-predicate method ...)
   (λ (sym . args)
-    (if (and type-predicate (eq? type-predicate sym))
-        (type-predicate)
-        (case sym
-          [(method) (apply method args)]
-          ...))))
+    (cond ((and type-predicate (eq? type-predicate sym))
+           (type-predicate))
+          ((eq? 'method sym) (apply method args))
+          ...)))
 
 (define-syntax-rule (assert form)
   (unless form
     (error "Assertion failed: " 'form form)))
 
-(provide assert bundle make-bundle-predicate write-line)
+(define-syntax (define-record stx)
+  (let* ((datum (syntax->datum stx))
+         (name (cadr datum))
+         (fields (caddr datum))
+         (constructor-name (string->symbol (string-append "make-" (symbol->string name)))))
+    (datum->syntax stx `(struct ,name ,fields #:transparent #:constructor-name ,constructor-name))))
+
+(provide assert bundle make-bundle-predicate write-line define-record)

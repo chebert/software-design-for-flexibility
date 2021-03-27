@@ -5,54 +5,109 @@
 (require (only-in racket/pretty
                   (pretty-print pp)))
 
-(define-for-syntax arithmetic-operators
-  '(- + * / = > < >= <= expt sin cos))
+(require (for-syntax "sdf-install-arithmetic.rkt"))
+(require "sdf-install-arithmetic.rkt")
 
-(define-for-syntax binding-operator-name car)
-(define-for-syntax binding-procedure-name cadr)
 
+;; Prefix implemenation operators with n:
 (define-for-syntax implementation-prefix 'n:)
 (define-for-syntax (implementation-operator-name operator)
   (string->symbol (string-append (symbol->string implementation-prefix) (symbol->string operator))))
-(define-for-syntax (arithmetic-operator-binding operator)
-  `(,operator ,(implementation-operator-name operator)))
-(define-for-syntax arithmetic-operator-bindings
-  (map arithmetic-operator-binding arithmetic-operators))
-(define-for-syntax (arithmetic-operator-definition binding)
-  `(define ,(binding-operator-name binding) ,(binding-procedure-name binding)))
-(define-for-syntax arithmetic-operator-definitions
-  (map arithmetic-operator-definition arithmetic-operator-bindings))
 
-(define-for-syntax get-implementation-value-cases
-  (map (λ (binding) `((,(binding-operator-name binding)) ,(binding-procedure-name binding))) arithmetic-operator-bindings))
+
+(define-for-syntax binding-operator-name car)
+(define-for-syntax binding-procedure-name cadr)
+;; Create bindings of '(operator . n:operator)
+(define-for-syntax implementation-operator-bindings
+  (map (λ (operator)
+         `(,operator ,(implementation-operator-name operator)))
+       arithmetic-operators))
+
+;; Create local definitions of operator's so that we can set! them in install-arithmetic!
+(define-for-syntax arithmetic-operator-definitions
+  (map (λ (binding)
+         `(define ,(binding-operator-name binding)
+            ,(binding-procedure-name binding)))
+       implementation-operator-bindings))
+
+
+;; definition for get-implementation-value which looks up the base implemenation of procedure-name.
 (define-for-syntax get-implementation-value-definition
   `(define (get-implementation-value procedure-name)
-     (case procedure-name ,@get-implementation-value-cases)))
+     (case procedure-name
+       ((negate) n:-)
+       ((invert) n:/)
+       ,@(map
+          (λ (binding)
+            `((,(binding-operator-name binding)) ,(binding-procedure-name binding)))
+          implementation-operator-bindings))))
 
-(define-for-syntax (arithmetic-operator-installations package)
-  (map (λ (operator)
-         `(set! ,operator (package-operator ,package ',operator)))
-       arithmetic-operators))
-(define-for-syntax install-arithmetic-definition
-  `(define (install-arithmetic! package)
-     ,@(arithmetic-operator-installations 'package)))
+;; Definition of unary operators introduced
+(define negate n:-)
+(define invert n:/)
+
+(define (fix-arithmetic-procedure-arity operator procedure constant-map)
+  (cond
+    ((memq operator +-like-arithmetic-operators)
+     (+-like-operator operator procedure constant-map))
+    ((memq operator --like-arithmetic-operators)
+     (--like-operator operator procedure))
+    ((memq operator arithmetic-comparators)
+     (arithmetic-comparator operator procedure))
+    (else procedure)))
+(define (+-like-operator operator binary-procedure constant-map)
+  (λ args
+    (let ((arity (length args)))
+      (cond ((null? args) (0ary-operator-value operator constant-map))
+            ((null? (rest args)) (first args))
+            (else (foldl binary-procedure (first args) (rest args)))))))
+
+(define (--like-operator operator binary-procedure)
+  (λ args
+    (let ((arity (length args)))
+      (cond ((null? args) (error "Expected at least 1 argument to " operator))
+            ((null? (rest args)) ((unary-operator-procedure operator) (first args)))
+            (else (foldl binary-procedure (first args) (rest args)))))))
+
+(define (arithmetic-comparator comparator binary-procedure)
+  (λ args
+     (let loop ((args args)
+                (result #t))
+       (if (or (not result) (null? args) (null? (rest args)))
+           result
+           (loop (rest args)
+                 (and result (binary-procedure (first args) (second args))))))))
+;; TODO: symbolic comparison is wack for +2 arguments
+(define (0ary-operator-value operator constant-map)
+  (cond ((eq? operator '+) (constant-map 'additive-identity))
+        ((eq? operator '*) (constant-map 'multiplicative-identity))))
+(define (unary-operator-procedure operator)
+  (cond ((eq? operator '-) negate)
+        ((eq? operator '/) invert)))
+
 
 (define-syntax (define-arithmetic stx)
-  (datum->syntax stx `(begin (define arithmetic-operators ',arithmetic-operators)
-                             ,@arithmetic-operator-definitions
-                             (require (only-in racket ,@arithmetic-operator-bindings))
-                             ,get-implementation-value-definition
-                             ,install-arithmetic-definition)))
+  (datum->syntax stx `(begin
+                        ;; local definitions of all arithmetic operators so that they can be set!
+                        ,@arithmetic-operator-definitions
+                        ;; re-require the implementation operators prefixed with n:
+                        (require (only-in racket ,@implementation-operator-bindings))
+                        ;; define get-implementation-value
+                        ,get-implementation-value-definition
+                        ;; define install-arithmetic-package-bindings! from sdf-install-arithmetic
+                        ,install-arithmetic-package-bindings-definition)))
 
 (define-arithmetic)
 
+;; Not sure the difference between operators and procedure-names.
 (define (operator->procedure-name operator) operator)
 
+;; Operators are fixed-arity because of applicability-specifications
 (define (operator-arity operator)
-  (procedure-arity
-   (get-implementation-value (operator->procedure-name operator))))
-
-(define (package-operator package operator) (cdr (assq operator package)))
+  (case operator
+    ((negate invert sin cos) 1)
+    ((+ - * / < > = <= >= expt) 2)
+    (else (error "arity not known for " operator))))
 
 ;; Simple ODE
 
@@ -125,7 +180,7 @@
                      (λ (operator)
                        (λ args (cons operator args)))))
 
-(install-arithmetic! symbolic-arithmetic-1)
+;(install-arithmetic! symbolic-arithmetic-1)
 
 (define (symbolic-evolution)
   (x 0 ((evolver F 'h stormer-2)
@@ -133,10 +188,7 @@
         1)))
 
 ;; Combining arithmetics
-(define (make-operation operator applicability procedure)
-  (list 'operation operator applicability procedure))
-(define (operation-applicability operation)
-  (third operation))
+(define-record operation (operator applicability procedure))
 
 (define (all-args fixed-arity predicate)
   (assert (exact-nonnegative-integer? fixed-arity))
@@ -167,18 +219,27 @@
                             predicate)
                   procedure))
 
-(struct arithmetic
+(define default-object? (make-bundle-predicate 'default-object))
+(define (default-object)
+  (bundle default-object?))
+
+(define-record arithmetic
   (name
    domain-predicate
    base-arithmetic-packages
    map-of-constant-name-to-constant
-   map-of-operator-name-to-operation)
-  #:transparent)
-(define make-arithmetic arithmetic)
+   map-of-operator-name-to-operation))
 
-(define default-object? (make-bundle-predicate 'default-object))
-(define (default-object)
-  (bundle default-object?))
+
+(define (arithmetic-operator->installable-procedure-map arithmetic)
+  (let ((operation-map (arithmetic-map-of-operator-name-to-operation arithmetic))
+        (constant-map (arithmetic-map-of-constant-name-to-constant arithmetic)))
+    (λ (operator)
+      (let ((operation (operation-map operator)))
+        (fix-arithmetic-procedure-arity operator (operation-procedure operation) constant-map)))))
+
+(define (install-arithmetic! arithmetic)
+  (install-arithmetic-package-bindings! (arithmetic-operator->installable-procedure-map arithmetic)))
 
 (define numeric-arithmetic
   (make-arithmetic 'numeric number? '()
@@ -192,7 +253,19 @@
                                        (get-implementation-value
                                         (operator->procedure-name operator))))))
 
+
 (define (symbolic? datum) (or (symbol? datum) (pair? datum)))
+
+(define symbolic-arithmetic
+  (make-arithmetic 'symbolic symbolic? '()
+                   (λ (name)
+                     (case name
+                       ((additive-identity) 'zero)
+                       ((multiplicative-identity) 'one)
+                       (else (default-object))))
+                   (λ (operator)
+                     (simple-operation operator symbolic?
+                                       (λ args (cons operator args))))))
 
 (define (symbolic-extender base-arithmetic)
   (make-arithmetic 'symbolic ;name
@@ -208,3 +281,5 @@
                                                 symbolic?
                                                 base-predicate)
                                        (λ args cons operator args))))))
+
+(install-arithmetic! numeric-arithmetic)

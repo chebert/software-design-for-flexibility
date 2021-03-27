@@ -60,14 +60,14 @@
     (let ((arity (length args)))
       (cond ((null? args) (0ary-operator-value operator constant-map))
             ((null? (rest args)) (first args))
-            (else (foldl binary-procedure (first args) (rest args)))))))
+            (else (foldl (swap-args binary-procedure) (first args) (rest args)))))))
 
 (define (--like-operator operator binary-procedure)
   (λ args
     (let ((arity (length args)))
       (cond ((null? args) (error "Expected at least 1 argument to " operator))
             ((null? (rest args)) ((unary-operator-procedure operator) (first args)))
-            (else (foldl binary-procedure (first args) (rest args)))))))
+            (else (foldl (swap-args binary-procedure) (first args) (rest args)))))))
 
 (define (arithmetic-comparator comparator binary-procedure)
   (λ args
@@ -192,7 +192,7 @@
 
 (define (all-args fixed-arity predicate)
   (assert (exact-nonnegative-integer? fixed-arity))
-  (make-list fixed-arity predicate))
+  (list (make-list fixed-arity predicate)))
 
 (define (enumerate-combined-applicabilities xs ys)
   (assert (= (length xs) (length ys)))
@@ -230,7 +230,6 @@
    map-of-constant-name-to-constant
    map-of-operator-name-to-operation))
 
-
 (define (extended-constant-map arithmetic)
   (λ (operator)
     (apply (arithmetic-map-of-constant-name-to-constant arithmetic)
@@ -250,8 +249,20 @@
         (constant-map (extended-constant-map arithmetic)))
     (λ (operator)
       (let ((operation (operation-map operator)))
-        ;; TODO: check applicability
-        (fix-arithmetic-procedure-arity operator (operation-procedure operation) constant-map)))))
+        (fix-arithmetic-procedure-arity operator
+                                        (λ args
+                                          (if (is-operation-applicable? operation args)
+                                              (apply (operation-procedure operation) args)
+                                              (error "Inapplicable operation" operation args)))
+                                        constant-map)))))
+
+(define (is-operation-applicable? operation args)
+  (let ((applicability (operation-applicability operation)))
+    (memf
+     (λ (x) x)
+     (map (λ (predicates)
+            (not (memq #f (map (λ (p a) (p a)) predicates args))))
+          applicability))))
 
 (define (install-arithmetic! arithmetic)
   (install-arithmetic-package-bindings! (arithmetic-operator->installable-procedure-map arithmetic)))
@@ -291,10 +302,75 @@
                    (let ((base-predicate
                           (arithmetic-domain-predicate base-arithmetic)))
                      (λ (operator base-operation) ;operator-generator
-                       (make-operation operator
-                                       (any-arg (operator-arity operator)
-                                                symbolic?
-                                                base-predicate)
-                                       (λ args (cons operator args)))))))
+                       (operation-union operator
+                                        (make-operation operator
+                                                        (any-arg (operator-arity operator)
+                                                                 symbolic?
+                                                                 base-predicate)
+                                                        (λ args (cons operator args)))
+                                        base-operation)))))
 
-(install-arithmetic! (symbolic-extender numeric-arithmetic))
+
+;; Combinator for arithmetics
+
+(define (add-arithmetics . arithmetics)
+  (add-arithmetics* arithmetics))
+(define (add-arithmetics* arithmetics)
+  (if (null? (cdr arithmetics))
+      (car arithmetics)
+      (make-arithmetic 'add
+                       (disjoin*
+                        (map arithmetic-domain-predicate
+                             arithmetics))
+                       arithmetics
+                       constant-union
+                       operation-union)))
+
+(define (disjoin* predicates)
+  (λ (x)
+    (let loop ((result #f)
+               (predicates predicates))
+      (if (or result (null? predicates))
+          result
+          (loop ((first predicates) x)
+                (rest predicates))))))
+(define (conjoin* predicates)
+  (λ (x)
+    (let loop ((result #t)
+               (predicates predicates))
+      (if (or (not result) (null? predicates))
+          result
+          (loop ((first predicates) x)
+                (rest predicates))))))
+
+
+(define (constant-union name . constants)
+  (let ((unique
+         (remove default-object? (remove-duplicates constants eqv?))))
+    (if (pair? unique)
+        (car unique) ; unreasonable choice
+        (default-object))))
+
+(define (operation-union operator . operations)
+  (operation-union* operator operations))
+
+(define (operation-union* operator operations)
+  (make-operation operator
+                  (applicability-union*
+                   (map operation-applicability operations))
+                  (λ args
+                    (operation-union-dispatch operator
+                                              operations
+                                              args))))
+
+(define (operation-union-dispatch operator operations args)
+  (let ((operation
+         (findf (λ (operation)
+                  (is-operation-applicable? operation args))
+                operations)))
+    (if (not operation)
+        (error "inapplicable operation:" operator args)
+        (apply (operation-procedure operation) args))))
+
+(define (applicability-union* applicabilities)
+  (apply append applicabilities))
